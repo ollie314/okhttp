@@ -24,7 +24,6 @@ import java.util.List;
 import javax.net.ssl.SSLPeerUnverifiedException;
 import okhttp3.internal.Util;
 import okhttp3.internal.tls.CertificateChainCleaner;
-import okhttp3.internal.tls.TrustRootIndex;
 import okio.ByteString;
 
 /**
@@ -125,11 +124,11 @@ public final class CertificatePinner {
   public static final CertificatePinner DEFAULT = new Builder().build();
 
   private final List<Pin> pins;
-  private final TrustRootIndex trustRootIndex;
+  private final CertificateChainCleaner certificateChainCleaner;
 
-  private CertificatePinner(Builder builder) {
-    this.pins = Util.immutableList(builder.pins);
-    this.trustRootIndex = builder.trustRootIndex;
+  private CertificatePinner(List<Pin> pins, CertificateChainCleaner certificateChainCleaner) {
+    this.pins = pins;
+    this.certificateChainCleaner = certificateChainCleaner;
   }
 
   /**
@@ -145,8 +144,8 @@ public final class CertificatePinner {
     List<Pin> pins = findMatchingPins(hostname);
     if (pins.isEmpty()) return;
 
-    if (trustRootIndex != null) {
-      peerCertificates = new CertificateChainCleaner(trustRootIndex).clean(peerCertificates);
+    if (certificateChainCleaner != null) {
+      peerCertificates = certificateChainCleaner.clean(peerCertificates, hostname);
     }
 
     for (int c = 0, certsSize = peerCertificates.size(); c < certsSize; c++) {
@@ -208,8 +207,11 @@ public final class CertificatePinner {
     return result;
   }
 
-  Builder newBuilder() {
-    return new Builder(this);
+  /** Returns a certificate pinner that uses {@code certificateChainCleaner}. */
+  CertificatePinner withCertificateChainCleaner(CertificateChainCleaner certificateChainCleaner) {
+    return this.certificateChainCleaner != certificateChainCleaner
+        ? new CertificatePinner(pins, certificateChainCleaner)
+        : this;
   }
 
   /**
@@ -289,20 +291,6 @@ public final class CertificatePinner {
   /** Builds a configured certificate pinner. */
   public static final class Builder {
     private final List<Pin> pins = new ArrayList<>();
-    private TrustRootIndex trustRootIndex;
-
-    public Builder() {
-    }
-
-    Builder(CertificatePinner certificatePinner) {
-      this.pins.addAll(certificatePinner.pins);
-      this.trustRootIndex = certificatePinner.trustRootIndex;
-    }
-
-    public Builder trustRootIndex(TrustRootIndex trustRootIndex) {
-      this.trustRootIndex = trustRootIndex;
-      return this;
-    }
 
     /**
      * Pins certificates for {@code pattern}.
@@ -312,7 +300,7 @@ public final class CertificatePinner {
      * Info, base64-encoded and prefixed with either {@code sha256/} or {@code sha1/}.
      */
     public Builder add(String pattern, String... pins) {
-      if (pattern == null) throw new IllegalArgumentException("pattern == null");
+      if (pattern == null) throw new NullPointerException("pattern == null");
 
       for (String pin : pins) {
         this.pins.add(new Pin(pattern, pin));
@@ -322,7 +310,7 @@ public final class CertificatePinner {
     }
 
     public CertificatePinner build() {
-      return new CertificatePinner(this);
+      return new CertificatePinner(Util.immutableList(pins), null);
     }
   }
 }

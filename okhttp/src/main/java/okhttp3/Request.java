@@ -15,7 +15,6 @@
  */
 package okhttp3;
 
-import java.net.URI;
 import java.net.URL;
 import java.util.List;
 import okhttp3.internal.http.HttpMethod;
@@ -31,7 +30,6 @@ public final class Request {
   private final RequestBody body;
   private final Object tag;
 
-  private volatile URI javaNetUri; // Lazily initialized.
   private volatile CacheControl cacheControl; // Lazily initialized.
 
   private Request(Builder builder) {
@@ -118,7 +116,7 @@ public final class Request {
     }
 
     public Builder url(HttpUrl url) {
-      if (url == null) throw new IllegalArgumentException("url == null");
+      if (url == null) throw new NullPointerException("url == null");
       this.url = url;
       return this;
     }
@@ -130,7 +128,7 @@ public final class Request {
      * exception by calling {@link HttpUrl#parse}; it returns null for invalid URLs.
      */
     public Builder url(String url) {
-      if (url == null) throw new IllegalArgumentException("url == null");
+      if (url == null) throw new NullPointerException("url == null");
 
       // Silently replace websocket URLs with HTTP URLs.
       if (url.regionMatches(true, 0, "ws:", 0, 3)) {
@@ -151,7 +149,7 @@ public final class Request {
      * https}.
      */
     public Builder url(URL url) {
-      if (url == null) throw new IllegalArgumentException("url == null");
+      if (url == null) throw new NullPointerException("url == null");
       HttpUrl parsed = HttpUrl.get(url);
       if (parsed == null) throw new IllegalArgumentException("unexpected url: " + url);
       return url(parsed);
@@ -229,9 +227,8 @@ public final class Request {
     }
 
     public Builder method(String method, RequestBody body) {
-      if (method == null || method.length() == 0) {
-        throw new IllegalArgumentException("method == null || method.length() == 0");
-      }
+      if (method == null) throw new NullPointerException("method == null");
+      if (method.length() == 0) throw new IllegalArgumentException("method.length() == 0");
       if (body != null && !HttpMethod.permitsRequestBody(method)) {
         throw new IllegalArgumentException("method " + method + " must not have a request body.");
       }
