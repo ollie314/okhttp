@@ -24,8 +24,10 @@ import java.net.HttpCookie;
 import java.net.HttpURLConnection;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.net.ProtocolException;
 import java.net.Proxy;
 import java.net.ServerSocket;
+import java.net.SocketTimeoutException;
 import java.net.UnknownHostException;
 import java.net.UnknownServiceException;
 import java.security.cert.Certificate;
@@ -760,10 +762,36 @@ public final class CallTest {
   }
 
   /**
-   * Make a request with two routes. The first route will time out because it's connecting via a
-   * null proxy server. The second will succeed.
+   * Make a request with two routes. The first route will time out because it's connecting to a
+   * special address that never connects. The automatic retry will succeed.
    */
   @Test public void connectTimeoutsAttemptsAlternateRoute() throws Exception {
+    InetSocketAddress unreachableAddress = new InetSocketAddress("10.255.255.1", 8080);
+
+    RecordingProxySelector proxySelector = new RecordingProxySelector();
+    proxySelector.proxies.add(new Proxy(Proxy.Type.HTTP, unreachableAddress));
+    proxySelector.proxies.add(server.toProxyAddress());
+
+    server.enqueue(new MockResponse()
+        .setBody("success!"));
+
+    client = client.newBuilder()
+        .proxySelector(proxySelector)
+        .readTimeout(100, TimeUnit.MILLISECONDS)
+        .connectTimeout(100, TimeUnit.MILLISECONDS)
+        .build();
+
+    Request request = new Request.Builder().url("http://android.com/").build();
+    executeSynchronously(request)
+        .assertCode(200)
+        .assertBody("success!");
+  }
+
+  /**
+   * Make a request with two routes. The first route will fail because the null server connects but
+   * never responds. The manual retry will succeed.
+   */
+  @Test public void readTimeoutFails() throws Exception {
     InetSocketAddress nullServerAddress = startNullServer();
 
     RecordingProxySelector proxySelector = new RecordingProxySelector();
@@ -779,6 +807,8 @@ public final class CallTest {
         .build();
 
     Request request = new Request.Builder().url("http://android.com/").build();
+    executeSynchronously(request)
+        .assertFailure(SocketTimeoutException.class);
     executeSynchronously(request)
         .assertCode(200)
         .assertBody("success!");
@@ -2229,7 +2259,6 @@ public final class CallTest {
    * OkHttp has a bug where a `Connection: close` response header is not honored when establishing
    * a TLS tunnel. https://github.com/square/okhttp/issues/2426
    */
-  @Ignore("currently broken")
   @Test public void proxyAuthenticateOnConnectWithConnectionClose() throws Exception {
     server.useHttps(sslContext.getSocketFactory(), true);
     server.setProtocols(Collections.singletonList(Protocol.HTTP_1_1));
@@ -2264,6 +2293,33 @@ public final class CallTest {
 
     // GET reuses the connection from the second connect.
     assertEquals(1, server.takeRequest().getSequenceNumber());
+  }
+
+  @Test public void tooManyProxyAuthFailuresWithConnectionClose() throws IOException {
+    server.useHttps(sslContext.getSocketFactory(), true);
+    server.setProtocols(Collections.singletonList(Protocol.HTTP_1_1));
+    for (int i = 0; i < 21; i++) {
+      server.enqueue(new MockResponse()
+          .setResponseCode(407)
+          .addHeader("Proxy-Authenticate: Basic realm=\"localhost\"")
+          .addHeader("Connection: close"));
+    }
+
+    client = client.newBuilder()
+        .sslSocketFactory(sslContext.getSocketFactory())
+        .proxy(server.toProxyAddress())
+        .proxyAuthenticator(new RecordingOkAuthenticator("password"))
+        .hostnameVerifier(new RecordingHostnameVerifier())
+        .build();
+
+    Request request = new Request.Builder()
+        .url("https://android.com/foo")
+        .build();
+    try {
+      client.newCall(request).execute();
+      fail();
+    } catch (ProtocolException expected) {
+    }
   }
 
   /**
