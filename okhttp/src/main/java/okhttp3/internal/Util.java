@@ -29,16 +29,17 @@ import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
 import java.util.TimeZone;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
 import okhttp3.HttpUrl;
+import okhttp3.RequestBody;
+import okhttp3.ResponseBody;
 import okio.Buffer;
+import okio.BufferedSource;
 import okio.ByteString;
 import okio.Source;
 
@@ -47,8 +48,20 @@ public final class Util {
   public static final byte[] EMPTY_BYTE_ARRAY = new byte[0];
   public static final String[] EMPTY_STRING_ARRAY = new String[0];
 
-  /** A cheap and type-safe constant for the UTF-8 Charset. */
+  public static final ResponseBody EMPTY_RESPONSE = ResponseBody.create(null, EMPTY_BYTE_ARRAY);
+  public static final RequestBody EMPTY_REQUEST = RequestBody.create(null, EMPTY_BYTE_ARRAY);
+
+  private static final ByteString UTF_8_BOM = ByteString.decodeHex("efbbff");
+  private static final ByteString UTF_16_BE_BOM = ByteString.decodeHex("feff");
+  private static final ByteString UTF_16_LE_BOM = ByteString.decodeHex("fffe");
+  private static final ByteString UTF_32_BE_BOM = ByteString.decodeHex("0000ffff");
+  private static final ByteString UTF_32_LE_BOM = ByteString.decodeHex("ffff0000");
+
   public static final Charset UTF_8 = Charset.forName("UTF-8");
+  private static final Charset UTF_16_BE = Charset.forName("UTF-16BE");
+  private static final Charset UTF_16_LE = Charset.forName("UTF-16LE");
+  private static final Charset UTF_32_BE = Charset.forName("UTF-32BE");
+  private static final Charset UTF_32_LE = Charset.forName("UTF-32LE");
 
   /** GMT and UTC are equivalent for our purposes. */
   public static final TimeZone UTC = TimeZone.getTimeZone("GMT");
@@ -128,29 +141,6 @@ public final class Util {
   }
 
   /**
-   * Closes {@code a} and {@code b}. If either close fails, this completes the other close and
-   * rethrows the first encountered exception.
-   */
-  public static void closeAll(Closeable a, Closeable b) throws IOException {
-    Throwable thrown = null;
-    try {
-      a.close();
-    } catch (Throwable e) {
-      thrown = e;
-    }
-    try {
-      b.close();
-    } catch (Throwable e) {
-      if (thrown == null) thrown = e;
-    }
-    if (thrown == null) return;
-    if (thrown instanceof IOException) throw (IOException) thrown;
-    if (thrown instanceof RuntimeException) throw (RuntimeException) thrown;
-    if (thrown instanceof Error) throw (Error) thrown;
-    throw new AssertionError(thrown);
-  }
-
-  /**
    * Attempts to exhaust {@code source}, returning true if successful. This is useful when reading a
    * complete source is helpful, such as when doing so completes a cache body or frees a socket
    * connection for reuse.
@@ -175,7 +165,7 @@ public final class Util {
     source.timeout().deadlineNanoTime(now + Math.min(originalDuration, timeUnit.toNanos(duration)));
     try {
       Buffer skipBuffer = new Buffer();
-      while (source.read(skipBuffer, 2048) != -1) {
+      while (source.read(skipBuffer, 8192) != -1) {
         skipBuffer.clear();
       }
       return true; // Success! The source has been exhausted.
@@ -242,11 +232,6 @@ public final class Util {
   /** Returns an immutable list containing {@code elements}. */
   public static <T> List<T> immutableList(T... elements) {
     return Collections.unmodifiableList(Arrays.asList(elements.clone()));
-  }
-
-  /** Returns an immutable copy of {@code map}. */
-  public static <K, V> Map<K, V> immutableMap(Map<K, V> map) {
-    return Collections.unmodifiableMap(new LinkedHashMap<>(map));
   }
 
   public static ThreadFactory threadFactory(final String name, final boolean daemon) {
@@ -321,8 +306,11 @@ public final class Util {
         && e.getMessage().contains("getsockname failed");
   }
 
-  public static boolean contains(String[] array, String value) {
-    return Arrays.asList(array).contains(value);
+  public static <T> int indexOf(T[] array, T value) {
+    for (int i = 0, size = array.length; i < size; i++) {
+      if (equal(array[i], value)) return i;
+    }
+    return -1;
   }
 
   public static String[] concat(String[] array, String value) {
@@ -445,5 +433,41 @@ public final class Util {
   /** Returns true if {@code host} is not a host name and might be an IP address. */
   public static boolean verifyAsIpAddress(String host) {
     return VERIFY_AS_IP_ADDRESS.matcher(host).matches();
+  }
+
+  /** Returns a {@link Locale#US} formatted {@link String}. */
+  public static String format(String format, Object... args) {
+    return String.format(Locale.US, format, args);
+  }
+
+  public static Charset bomAwareCharset(BufferedSource source, Charset charset) throws IOException {
+    if (source.rangeEquals(0, UTF_8_BOM)) {
+      source.skip(UTF_8_BOM.size());
+      return UTF_8;
+    }
+    if (source.rangeEquals(0, UTF_16_BE_BOM)) {
+      source.skip(UTF_16_BE_BOM.size());
+      return UTF_16_BE;
+    }
+    if (source.rangeEquals(0, UTF_16_LE_BOM)) {
+      source.skip(UTF_16_LE_BOM.size());
+      return UTF_16_LE;
+    }
+    if (source.rangeEquals(0, UTF_32_BE_BOM)) {
+      source.skip(UTF_32_BE_BOM.size());
+      return UTF_32_BE;
+    }
+    if (source.rangeEquals(0, UTF_32_LE_BOM)) {
+      source.skip(UTF_32_LE_BOM.size());
+      return UTF_32_LE;
+    }
+    return charset;
+  }
+
+  /** Re-throws {@code t} if it is a fatal exception which should not be handled. */
+  public static void throwIfFatal(Throwable t) {
+    if (t instanceof VirtualMachineError) throw (VirtualMachineError) t;
+    if (t instanceof ThreadDeath) throw (ThreadDeath) t;
+    if (t instanceof LinkageError) throw (LinkageError) t;
   }
 }

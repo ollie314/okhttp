@@ -15,12 +15,11 @@
  */
 package okhttp3;
 
+import java.io.IOException;
 import java.util.Arrays;
 import java.util.concurrent.TimeUnit;
-import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLException;
-import javax.net.ssl.SSLSocketFactory;
-import okhttp3.internal.SslContextBuilder;
+import okhttp3.internal.tls.SslClient;
 import okhttp3.mockwebserver.MockResponse;
 import okhttp3.mockwebserver.MockWebServer;
 import okhttp3.mockwebserver.SocketPolicy;
@@ -31,13 +30,14 @@ import org.junit.rules.Timeout;
 
 import static okhttp3.TestUtil.defaultClient;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
 public final class ConnectionReuseTest {
   @Rule public final TestRule timeout = new Timeout(30_000);
   @Rule public final MockWebServer server = new MockWebServer();
 
-  private SSLContext sslContext = SslContextBuilder.localhost();
+  private SslClient sslClient = SslClient.localhost();
   private OkHttpClient client = defaultClient();
 
   @Test public void connectionsAreReused() throws Exception {
@@ -186,6 +186,9 @@ public final class ConnectionReuseTest {
     assertEquals("a", responseA.body().string());
     assertEquals(0, server.takeRequest().getSequenceNumber());
 
+    // Give the socket a chance to become stale.
+    Thread.sleep(250);
+
     Request requestB = new Request.Builder()
         .url(server.url("/"))
         .post(RequestBody.create(MediaType.parse("text/plain"), "b"))
@@ -248,11 +251,9 @@ public final class ConnectionReuseTest {
     response.body().close();
 
     // This client shares a connection pool but has a different SSL socket factory.
-    SSLContext sslContext2 = SSLContext.getInstance("TLS");
-    sslContext2.init(null, null, null);
-    SSLSocketFactory sslSocketFactory2 = sslContext2.getSocketFactory();
+    SslClient sslClient2 = new SslClient.Builder().build();
     OkHttpClient anotherClient = client.newBuilder()
-        .sslSocketFactory(sslSocketFactory2)
+        .sslSocketFactory(sslClient2.socketFactory, sslClient2.trustManager)
         .build();
 
     // This client fails to connect because the new SSL socket factory refuses.
@@ -287,6 +288,42 @@ public final class ConnectionReuseTest {
     assertEquals(0, server.takeRequest().getSequenceNumber());
   }
 
+  /**
+   * Regression test for an edge case where closing response body in the HTTP engine doesn't release
+   * the corresponding stream allocation. This test keeps those response bodies alive and reads
+   * them after the redirect has completed. This forces a connection to not be reused where it would
+   * be otherwise.
+   *
+   * https://github.com/square/okhttp/issues/2409
+   */
+  @Test public void connectionsAreNotReusedIfNetworkInterceptorInterferes() throws Exception {
+    client = client.newBuilder().addNetworkInterceptor(new Interceptor() {
+      @Override public Response intercept(Chain chain) throws IOException {
+        Response response = chain.proceed(chain.request());
+        return response.newBuilder()
+            .body(ResponseBody.create(null, "unrelated response body!"))
+            .build();
+      }
+    }).build();
+
+    server.enqueue(new MockResponse()
+        .setResponseCode(301)
+        .addHeader("Location: /b")
+        .setBody("/a has moved!"));
+    server.enqueue(new MockResponse()
+        .setBody("/b is here"));
+
+    Request request = new Request.Builder()
+        .url(server.url("/"))
+        .build();
+    try {
+      client.newCall(request).execute();
+      fail();
+    } catch (IllegalStateException expected) {
+      assertTrue(expected.getMessage().startsWith("Closing the body of"));
+    }
+  }
+
   private void enableHttps() {
     enableHttpsAndAlpn(Protocol.HTTP_1_1);
   }
@@ -297,11 +334,11 @@ public final class ConnectionReuseTest {
 
   private void enableHttpsAndAlpn(Protocol... protocols) {
     client = client.newBuilder()
-        .sslSocketFactory(sslContext.getSocketFactory())
+        .sslSocketFactory(sslClient.socketFactory, sslClient.trustManager)
         .hostnameVerifier(new RecordingHostnameVerifier())
         .protocols(Arrays.asList(protocols))
         .build();
-    server.useHttps(sslContext.getSocketFactory(), false);
+    server.useHttps(sslClient.socketFactory, false);
     server.setProtocols(client.protocols());
   }
 

@@ -160,7 +160,7 @@ public final class SocksProxy {
         String domainName = fromSource.readUtf8(domainNameLength);
         // Resolve HOSTNAME_THAT_ONLY_THE_PROXY_KNOWS to localhost.
         toAddress = domainName.equalsIgnoreCase(HOSTNAME_THAT_ONLY_THE_PROXY_KNOWS)
-            ? InetAddress.getLoopbackAddress()
+            ? InetAddress.getByName("localhost")
             : InetAddress.getByName(domainName);
         break;
 
@@ -208,7 +208,7 @@ public final class SocksProxy {
         Buffer buffer = new Buffer();
         try {
           while (true) {
-            long byteCount = source.read(buffer, 2048L);
+            long byteCount = source.read(buffer, 8192L);
             if (byteCount == -1L) break;
             sink.write(buffer, byteCount);
             sink.emit();

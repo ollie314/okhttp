@@ -22,11 +22,11 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
-import okhttp3.internal.Internal;
+import okhttp3.internal.platform.Platform;
 
-import static java.util.logging.Level.WARNING;
 import static okhttp3.internal.Util.delimiterOffset;
 import static okhttp3.internal.Util.trimSubstring;
+import static okhttp3.internal.platform.Platform.WARN;
 
 /** A cookie jar that delegates to a {@link java.net.CookieHandler}. */
 public final class JavaNetCookieJar implements CookieJar {
@@ -40,13 +40,13 @@ public final class JavaNetCookieJar implements CookieJar {
     if (cookieHandler != null) {
       List<String> cookieStrings = new ArrayList<>();
       for (Cookie cookie : cookies) {
-        cookieStrings.add(cookie.toString());
+        cookieStrings.add(cookie.toString(true));
       }
       Map<String, List<String>> multimap = Collections.singletonMap("Set-Cookie", cookieStrings);
       try {
         cookieHandler.put(url.uri(), multimap);
       } catch (IOException e) {
-        Internal.logger.log(WARNING, "Saving cookies failed for " + url.resolve("/..."), e);
+        Platform.get().log(WARN, "Saving cookies failed for " + url.resolve("/..."), e);
       }
     }
   }
@@ -58,7 +58,7 @@ public final class JavaNetCookieJar implements CookieJar {
     try {
       cookieHeaders = cookieHandler.get(url.uri(), headers);
     } catch (IOException e) {
-      Internal.logger.log(WARNING, "Loading cookies failed for " + url.resolve("/..."), e);
+      Platform.get().log(WARN, "Loading cookies failed for " + url.resolve("/..."), e);
       return Collections.emptyList();
     }
 

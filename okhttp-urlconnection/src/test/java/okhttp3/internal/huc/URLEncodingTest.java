@@ -27,9 +27,9 @@ import okhttp3.OkUrlFactory;
 import okhttp3.Request;
 import okhttp3.Response;
 import okhttp3.internal.Internal;
-import okhttp3.internal.InternalCache;
-import okhttp3.internal.http.CacheRequest;
-import okhttp3.internal.http.CacheStrategy;
+import okhttp3.internal.cache.CacheRequest;
+import okhttp3.internal.cache.CacheStrategy;
+import okhttp3.internal.cache.InternalCache;
 import org.junit.Ignore;
 import org.junit.Test;
 
@@ -125,35 +125,25 @@ public final class URLEncodingTest {
 
     OkHttpClient.Builder builder = new OkHttpClient.Builder();
     Internal.instance.setCache(builder, new InternalCache() {
-      @Override
-      public Response get(Request request) throws IOException {
+      @Override public Response get(Request request) throws IOException {
         uriReference.set(request.url().uri());
         throw new UnsupportedOperationException();
       }
 
-      @Override
-      public CacheRequest put(Response response) throws IOException {
+      @Override public CacheRequest put(Response response) throws IOException {
         return null;
       }
 
-      @Override
-      public void remove(Request request) throws IOException {
-
+      @Override public void remove(Request request) throws IOException {
       }
 
-      @Override
-      public void update(Response cached, Response network) throws IOException {
-
+      @Override public void update(Response cached, Response network) {
       }
 
-      @Override
-      public void trackConditionalCacheHit() {
-
+      @Override public void trackConditionalCacheHit() {
       }
 
-      @Override
-      public void trackResponse(CacheStrategy cacheStrategy) {
-
+      @Override public void trackResponse(CacheStrategy cacheStrategy) {
       }
     });
 

@@ -45,10 +45,11 @@ import okhttp3.ResponseBody;
 import okhttp3.internal.Internal;
 import okhttp3.internal.JavaNetHeaders;
 import okhttp3.internal.Util;
-import okhttp3.internal.http.CacheRequest;
+import okhttp3.internal.cache.CacheRequest;
+import okhttp3.internal.http.HttpHeaders;
 import okhttp3.internal.http.HttpMethod;
-import okhttp3.internal.http.OkHeaders;
 import okhttp3.internal.http.StatusLine;
+import okhttp3.internal.platform.Platform;
 import okio.BufferedSource;
 import okio.Okio;
 import okio.Sink;
@@ -57,7 +58,11 @@ import okio.Sink;
  * Helper methods that convert between Java and OkHttp representations.
  */
 public final class JavaApiConverter {
-  private static final RequestBody EMPTY_REQUEST_BODY = RequestBody.create(null, new byte[0]);
+  /** Synthetic response header: the local time when the request was sent. */
+  private static final String SENT_MILLIS = Platform.get().getPrefix() + "-Sent-Millis";
+
+  /** Synthetic response header: the local time when the response was received. */
+  private static final String RECEIVED_MILLIS = Platform.get().getPrefix() + "-Received-Millis";
 
   private JavaApiConverter() {
   }
@@ -85,7 +90,7 @@ public final class JavaApiConverter {
     // OkHttp's Call API requires a placeholder body; the real body will be streamed separately.
     String requestMethod = httpUrlConnection.getRequestMethod();
     RequestBody placeholderBody = HttpMethod.requiresRequestBody(requestMethod)
-        ? EMPTY_REQUEST_BODY
+        ? Util.EMPTY_REQUEST
         : null;
 
     Request okRequest = new Request.Builder()
@@ -106,7 +111,7 @@ public final class JavaApiConverter {
     okResponseBuilder.networkResponse(networkResponse);
 
     // Response headers
-    Headers okHeaders = extractOkResponseHeaders(httpUrlConnection);
+    Headers okHeaders = extractOkResponseHeaders(httpUrlConnection, okResponseBuilder);
     okResponseBuilder.headers(okHeaders);
 
     // Response body
@@ -155,11 +160,11 @@ public final class JavaApiConverter {
   }
 
   private static Headers varyHeaders(URLConnection urlConnection, Headers responseHeaders) {
-    if (OkHeaders.hasVaryAll(responseHeaders)) {
+    if (HttpHeaders.hasVaryAll(responseHeaders)) {
       // "*" means that this will be treated as uncacheable anyway.
       return null;
     }
-    Set<String> varyFields = OkHeaders.varyFields(responseHeaders);
+    Set<String> varyFields = HttpHeaders.varyFields(responseHeaders);
     if (varyFields.isEmpty()) {
       return new Headers.Builder().build();
     }
@@ -205,11 +210,11 @@ public final class JavaApiConverter {
     // Build a cache request for the response to use.
     Headers responseHeaders = createHeaders(javaResponse.getHeaders());
     Headers varyHeaders;
-    if (OkHeaders.hasVaryAll(responseHeaders)) {
+    if (HttpHeaders.hasVaryAll(responseHeaders)) {
       // "*" means that this will be treated as uncacheable anyway.
       varyHeaders = new Headers.Builder().build();
     } else {
-      varyHeaders = OkHeaders.varyHeaders(request.headers(), responseHeaders);
+      varyHeaders = HttpHeaders.varyHeaders(request.headers(), responseHeaders);
     }
 
     Request cacheRequest = new Request.Builder()
@@ -230,7 +235,7 @@ public final class JavaApiConverter {
     okResponseBuilder.message(statusLine.message);
 
     // Response headers
-    Headers okHeaders = extractOkHeaders(javaResponse);
+    Headers okHeaders = extractOkHeaders(javaResponse, okResponseBuilder);
     okResponseBuilder.headers(okHeaders);
 
     // Response body
@@ -273,7 +278,7 @@ public final class JavaApiConverter {
       URI uri, String requestMethod, Map<String, List<String>> requestHeaders) {
     // OkHttp's Call API requires a placeholder body; the real body will be streamed separately.
     RequestBody placeholderBody = HttpMethod.requiresRequestBody(requestMethod)
-        ? EMPTY_REQUEST_BODY
+        ? Util.EMPTY_REQUEST
         : null;
 
     Request.Builder builder = new Request.Builder()
@@ -281,7 +286,7 @@ public final class JavaApiConverter {
         .method(requestMethod, placeholderBody);
 
     if (requestHeaders != null) {
-      Headers headers = extractOkHeaders(requestHeaders);
+      Headers headers = extractOkHeaders(requestHeaders, null);
       builder.headers(headers);
     }
     return builder.build();
@@ -292,7 +297,7 @@ public final class JavaApiConverter {
    * from the supplied {@link Response}.
    */
   public static CacheResponse createJavaCacheResponse(final Response response) {
-    final Headers headers = response.headers();
+    final Headers headers = withSyntheticHeaders(response);
     final ResponseBody body = response.body();
     if (response.request().isHttps()) {
       final Handshake handshake = response.handshake();
@@ -382,6 +387,10 @@ public final class JavaApiConverter {
    * {@link Response}.
    */
   static HttpURLConnection createJavaUrlConnectionForCachePut(Response okResponse) {
+    okResponse = okResponse.newBuilder()
+        .body(null)
+        .headers(withSyntheticHeaders(okResponse))
+        .build();
     Request request = okResponse.request();
     // Create an object of the correct class in case the ResponseCache uses instanceof.
     if (request.isHttps()) {
@@ -389,6 +398,13 @@ public final class JavaApiConverter {
     } else {
       return new CacheHttpURLConnection(okResponse);
     }
+  }
+
+  private static Headers withSyntheticHeaders(Response okResponse) {
+    return okResponse.headers().newBuilder()
+        .add(SENT_MILLIS, Long.toString(okResponse.sentRequestAtMillis()))
+        .add(RECEIVED_MILLIS, Long.toString(okResponse.receivedResponseAtMillis()))
+        .build();
   }
 
   /**
@@ -402,26 +418,30 @@ public final class JavaApiConverter {
    * Extracts OkHttp headers from the supplied {@link java.net.CacheResponse}. Only real headers are
    * extracted. See {@link #extractStatusLine(java.net.CacheResponse)}.
    */
-  private static Headers extractOkHeaders(CacheResponse javaResponse) throws IOException {
+  private static Headers extractOkHeaders(
+      CacheResponse javaResponse, Response.Builder okResponseBuilder) throws IOException {
     Map<String, List<String>> javaResponseHeaders = javaResponse.getHeaders();
-    return extractOkHeaders(javaResponseHeaders);
+    return extractOkHeaders(javaResponseHeaders, okResponseBuilder);
   }
 
   /**
    * Extracts OkHttp headers from the supplied {@link java.net.HttpURLConnection}. Only real headers
    * are extracted. See {@link #extractStatusLine(java.net.HttpURLConnection)}.
    */
-  private static Headers extractOkResponseHeaders(HttpURLConnection httpUrlConnection) {
+  private static Headers extractOkResponseHeaders(
+      HttpURLConnection httpUrlConnection, Response.Builder okResponseBuilder) {
     Map<String, List<String>> javaResponseHeaders = httpUrlConnection.getHeaderFields();
-    return extractOkHeaders(javaResponseHeaders);
+    return extractOkHeaders(javaResponseHeaders, okResponseBuilder);
   }
 
   /**
    * Extracts OkHttp headers from the supplied {@link Map}. Only real headers are extracted. Any
-   * entry (one with a {@code null} key) is discarded.
+   * entry (one with a {@code null} key) is discarded. Special internal headers used to track cache
+   * metadata are omitted from the result and added to {@code okResponseBuilder} instead.
    */
   // @VisibleForTesting
-  static Headers extractOkHeaders(Map<String, List<String>> javaHeaders) {
+  static Headers extractOkHeaders(
+      Map<String, List<String>> javaHeaders, Response.Builder okResponseBuilder) {
     Headers.Builder okHeadersBuilder = new Headers.Builder();
     for (Map.Entry<String, List<String>> javaHeader : javaHeaders.entrySet()) {
       String name = javaHeader.getKey();
@@ -431,6 +451,16 @@ public final class JavaApiConverter {
         // requests. e.g. "GET / HTTP 1.1". Although this is no longer the case it must be
         // explicitly ignored because Headers.Builder does not support null keys.
         continue;
+      }
+      if (okResponseBuilder != null && javaHeader.getValue().size() == 1) {
+        if (name.equals(SENT_MILLIS)) {
+          okResponseBuilder.sentRequestAtMillis(Long.valueOf(javaHeader.getValue().get(0)));
+          continue;
+        }
+        if (name.equals(RECEIVED_MILLIS)) {
+          okResponseBuilder.receivedResponseAtMillis(Long.valueOf(javaHeader.getValue().get(0)));
+          continue;
+        }
       }
       for (String value : javaHeader.getValue()) {
         Internal.instance.addLenient(okHeadersBuilder, name, value);
@@ -487,7 +517,7 @@ public final class JavaApiConverter {
 
       @Override
       public long contentLength() {
-        return OkHeaders.contentLength(okHeaders);
+        return HttpHeaders.contentLength(okHeaders);
       }
 
       @Override public BufferedSource source() {
@@ -826,18 +856,6 @@ public final class JavaApiConverter {
 
     @Override public SSLSocketFactory getSSLSocketFactory() {
       throw throwRequestSslAccessException();
-    }
-
-    @Override public long getContentLengthLong() {
-      return delegate.getContentLengthLong();
-    }
-
-    @Override public void setFixedLengthStreamingMode(long contentLength) {
-      delegate.setFixedLengthStreamingMode(contentLength);
-    }
-
-    @Override public long getHeaderFieldLong(String field, long defaultValue) {
-      return delegate.getHeaderFieldLong(field, defaultValue);
     }
   }
 

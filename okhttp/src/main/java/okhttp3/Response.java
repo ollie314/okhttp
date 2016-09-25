@@ -15,10 +15,11 @@
  */
 package okhttp3;
 
+import java.io.Closeable;
 import java.io.IOException;
 import java.util.Collections;
 import java.util.List;
-import okhttp3.internal.http.OkHeaders;
+import okhttp3.internal.http.HttpHeaders;
 import okio.Buffer;
 import okio.BufferedSource;
 
@@ -33,9 +34,12 @@ import static okhttp3.internal.http.StatusLine.HTTP_TEMP_REDIRECT;
 
 /**
  * An HTTP response. Instances of this class are not immutable: the response body is a one-shot
- * value that may be consumed only once. All other properties are immutable.
+ * value that may be consumed only once and then closed. All other properties are immutable.
+ *
+ * <p>This class implements {@link Closeable}. Closing it simply closes its response body. See
+ * {@link ResponseBody} for an explanation and examples.
  */
-public final class Response {
+public final class Response implements Closeable {
   private final Request request;
   private final Protocol protocol;
   private final int code;
@@ -43,9 +47,11 @@ public final class Response {
   private final Handshake handshake;
   private final Headers headers;
   private final ResponseBody body;
-  private Response networkResponse;
-  private Response cacheResponse;
+  private final Response networkResponse;
+  private final Response cacheResponse;
   private final Response priorResponse;
+  private final long sentRequestAtMillis;
+  private final long receivedResponseAtMillis;
 
   private volatile CacheControl cacheControl; // Lazily initialized.
 
@@ -60,18 +66,19 @@ public final class Response {
     this.networkResponse = builder.networkResponse;
     this.cacheResponse = builder.cacheResponse;
     this.priorResponse = builder.priorResponse;
+    this.sentRequestAtMillis = builder.sentRequestAtMillis;
+    this.receivedResponseAtMillis = builder.receivedResponseAtMillis;
   }
 
   /**
-   * The wire-level request that initiated this HTTP response. This is not
-   * necessarily the same request issued by the application:
+   * The wire-level request that initiated this HTTP response. This is not necessarily the same
+   * request issued by the application:
    *
    * <ul>
-   *     <li>It may be transformed by the HTTP client. For example, the client
-   *         may copy headers like {@code Content-Length} from the request body.
-   *     <li>It may be the request generated in response to an HTTP redirect or
-   *         authentication challenge. In this case the request URL may be
-   *         different than the initial request URL.
+   *     <li>It may be transformed by the HTTP client. For example, the client may copy headers like
+   *         {@code Content-Length} from the request body.
+   *     <li>It may be the request generated in response to an HTTP redirect or authentication
+   *         challenge. In this case the request URL may be different than the initial request URL.
    * </ul>
    */
   public Request request() {
@@ -226,7 +233,7 @@ public final class Response {
     } else {
       return Collections.emptyList();
     }
-    return OkHeaders.parseChallenges(headers(), responseField);
+    return HttpHeaders.parseChallenges(headers(), responseField);
   }
 
   /**
@@ -236,6 +243,29 @@ public final class Response {
   public CacheControl cacheControl() {
     CacheControl result = cacheControl;
     return result != null ? result : (cacheControl = CacheControl.parse(headers));
+  }
+
+  /**
+   * Returns a {@linkplain System#currentTimeMillis() timestamp} taken immediately before OkHttp
+   * transmitted the initiating request over the network. If this response is being served from the
+   * cache then this is the timestamp of the original request.
+   */
+  public long sentRequestAtMillis() {
+    return sentRequestAtMillis;
+  }
+
+  /**
+   * Returns a {@linkplain System#currentTimeMillis() timestamp} taken immediately after OkHttp
+   * received this response's headers from the network. If this response is being served from the
+   * cache then this is the timestamp of the original response.
+   */
+  public long receivedResponseAtMillis() {
+    return receivedResponseAtMillis;
+  }
+
+  /** Closes the response body. Equivalent to {@code body().close()}. */
+  @Override public void close() {
+    body.close();
   }
 
   @Override public String toString() {
@@ -261,6 +291,8 @@ public final class Response {
     private Response networkResponse;
     private Response cacheResponse;
     private Response priorResponse;
+    private long sentRequestAtMillis;
+    private long receivedResponseAtMillis;
 
     public Builder() {
       headers = new Headers.Builder();
@@ -277,6 +309,8 @@ public final class Response {
       this.networkResponse = response.networkResponse;
       this.cacheResponse = response.cacheResponse;
       this.priorResponse = response.priorResponse;
+      this.sentRequestAtMillis = response.sentRequestAtMillis;
+      this.receivedResponseAtMillis = response.receivedResponseAtMillis;
     }
 
     public Builder request(Request request) {
@@ -372,6 +406,16 @@ public final class Response {
       if (response.body != null) {
         throw new IllegalArgumentException("priorResponse.body != null");
       }
+    }
+
+    public Builder sentRequestAtMillis(long sentRequestAtMillis) {
+      this.sentRequestAtMillis = sentRequestAtMillis;
+      return this;
+    }
+
+    public Builder receivedResponseAtMillis(long receivedResponseAtMillis) {
+      this.receivedResponseAtMillis = receivedResponseAtMillis;
+      return this;
     }
 
     public Response build() {
